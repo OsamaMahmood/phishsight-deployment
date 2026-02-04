@@ -1,18 +1,25 @@
-# PhishSight
+# PhishSight Deployment
 
-Multi-tenant SaaS platform for phishing email analysis. The monorepo contains separate projects, each with its own git history.
+Deployment and orchestration repo for the PhishSight platform -- a multi-tenant SaaS phishing email analysis tool. This repo does **not** contain application source code. It provides Docker Compose configurations and environment templates to run all PhishSight services together for development or production.
 
-## Project Structure
+The actual application code lives in separate repositories that are cloned into this directory by the setup script.
+
+## Repository Layout
 
 ```
-PhishSight/
-├── phishsight-app-backend/   # Express.js + Prisma API (TypeScript)
-├── phishsight-app/           # Next.js 14 dashboard app (TypeScript)
-├── phishsight-site/          # Next.js 14 marketing site (TypeScript)
-├── phishsight-extention/     # Chrome extension (TypeScript)
-├── dev-deploy/               # Development docker-compose + env template
-├── prod-deploy/              # Production docker-compose + env template
-└── deployment-setup.sh       # Clones/pulls all repos from GitHub
+PhishSight/                        # This repo (deployment)
+├── dev-deploy/                    # Development docker-compose + env template
+│   ├── docker-compose.yml
+│   └── .env.example
+├── prod-deploy/                   # Production docker-compose + env template
+│   ├── docker-compose.yml
+│   └── .env.example
+├── deployment-setup.sh            # Clones/pulls all app repos into this directory
+│
+│  ── Cloned by deployment-setup.sh ──
+├── brain/                         # Backend API (Express.js + Prisma)
+├── app/                           # Frontend dashboard (Next.js 14)
+└── phishsight.com/                # Marketing site (Next.js 14)
 ```
 
 ## Services
@@ -32,17 +39,26 @@ PhishSight/
 ### Prerequisites
 
 - Docker and Docker Compose
-- Git with SSH access to the PhishSight repos
+- Git with SSH access to the PhishSight GitHub org
 
-### 1. Clone the repositories
+### 1. Clone the app repositories
+
+This deployment repo does not include the application source code. Run the setup script to clone them:
 
 ```bash
-# Clone this repo first, then run the setup script to pull sub-projects
 chmod +x deployment-setup.sh
 ./deployment-setup.sh
 ```
 
-The script clones all sub-project repos. If they already exist, it pulls the latest changes.
+This clones three repos into the current directory:
+
+| Repo | Cloned To | Description |
+|------|-----------|-------------|
+| `PhishSight/brain` | `brain/` | Backend API |
+| `PhishSight/app` | `app/` | Frontend dashboard |
+| `PhishSight/phishsight.com` | `phishsight.com/` | Marketing site |
+
+If the directories already exist, the script pulls the latest changes instead. Use `--clone-only` to skip pulling.
 
 ### 2. Configure environment
 
@@ -83,19 +99,26 @@ Login with the `SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD` you configured.
 
 ### Hot-Reload
 
-Development Docker setup mounts source code as volumes. Changes to files in `src/` (backend), `app/`, `components/`, `lib/` (frontend/site) are picked up automatically without rebuilding.
+The dev docker-compose mounts source code as volumes. Changes to files in `src/` (backend), `app/`, `components/`, `lib/` (frontend/site) are picked up automatically without rebuilding containers.
 
 ---
 
 ## Production Deployment
 
+Use `prod-deploy/` to build production Docker images and test them locally, or deploy to a server.
+
 ### Prerequisites
 
 - Docker and Docker Compose
-- A server with a domain pointed to it
-- Traefik reverse proxy running (handles SSL + routing)
+- For server deployment: a domain pointed to your server + Traefik reverse proxy
 
-### 1. Configure environment
+### 1. Clone app repos (if not done already)
+
+```bash
+./deployment-setup.sh
+```
+
+### 2. Configure environment
 
 ```bash
 cd prod-deploy
@@ -109,7 +132,7 @@ Fill in **ALL** required values. Key differences from dev:
 - Set `REDIS_PASSWORD` (dev uses no password)
 - Configure AWS S3 credentials for file storage
 
-### 2. Build and deploy
+### 3. Build and deploy
 
 ```bash
 cd prod-deploy
@@ -118,32 +141,32 @@ CACHEBUST=$(date +%s) docker compose up --build -d
 
 The `CACHEBUST` variable ensures Docker doesn't serve stale cached source code layers. Always pass it when deploying updates.
 
-### 3. Post-deployment
+### 4. Post-deployment
 
 - After the first successful deployment, set `RUN_SEED=false` in `.env` to prevent re-seeding on container restarts
 - Monitor logs: `docker compose logs -f api`
 - Check health: `curl https://api.yourdomain.com/health`
 
-### Architecture
+### Production Architecture
 
 ```
 Internet
-    │
-    ▼
+    |
+    v
  Traefik (SSL termination + routing)
-    │
-    ├── app.phishsight.com  → Frontend App (port 3000)
-    ├── api.phishsight.com  → Backend API (port 3001)
-    └── phishsight.com      → Marketing Site (port 3000, optional)
-            │
-            ▼
-     ┌──────────────┐
-     │  PostgreSQL   │  (internal network only)
-     │  Redis        │
-     └──────────────┘
+    |
+    |-- app.phishsight.com  --> Frontend App (port 3000)
+    |-- api.phishsight.com  --> Backend API (port 3001)
+    '-- phishsight.com      --> Marketing Site (port 3000, optional)
+            |
+            v
+     +----------------+
+     |  PostgreSQL     |  (internal network only)
+     |  Redis          |
+     +----------------+
 ```
 
-Production services are NOT exposed to the host. Traefik routes traffic via the `traefik-frontend` Docker network.
+Production services are NOT exposed to the host directly. Traefik routes traffic via the `traefik-frontend` Docker network.
 
 ---
 
@@ -155,7 +178,7 @@ All backend env vars are **runtime** -- set them in docker-compose `environment`
 
 ### Frontend / Marketing Site (Next.js)
 
-`NEXT_PUBLIC_*` variables are **baked into the JavaScript bundle at build time**. They are declared as `ARG` + `ENV` in the Dockerfile's builder stage.
+`NEXT_PUBLIC_*` variables are **baked into the JavaScript bundle at build time**. They are declared as `ARG` + `ENV` in each Dockerfile's builder stage.
 
 **If you change a `NEXT_PUBLIC_*` variable, you MUST rebuild the Docker image:**
 
@@ -182,13 +205,12 @@ Setting them only at runtime has no effect.
 
 ## Database Migrations
 
-Migrations run automatically on container start via the entrypoint script.
+Migrations run automatically on container start via the backend entrypoint script.
 
 To create a new migration during development:
 
 ```bash
-# From inside the backend project directory
-cd phishsight-app-backend
+cd brain
 npx prisma migrate dev --name descriptive_name
 npx prisma generate
 ```
@@ -223,7 +245,7 @@ docker compose logs -f postgres     # database logs
 docker compose exec postgres psql -U phishsight -d phishsight
 
 # Or use Prisma Studio
-cd phishsight-app-backend
+cd brain
 npx prisma studio
 ```
 
@@ -235,12 +257,19 @@ docker compose down -v              # removes volumes (all data)
 docker compose up --build
 ```
 
+### Pull latest code for all repos
+
+```bash
+./deployment-setup.sh
+```
+
+The script detects existing repos and pulls the latest changes. It stashes any uncommitted local changes before pulling and restores them after.
+
 ---
 
-## Sub-Project Documentation
+## App Repository Documentation
 
-Each sub-project has its own detailed README:
-- [phishsight-app-backend/README.md](phishsight-app-backend/README.md) -- API architecture, routes, services
-- [phishsight-app/README.md](phishsight-app/README.md) -- Dashboard app structure, components
-- [phishsight-site/README.md](phishsight-site/README.md) -- Marketing site pages, SEO
-- [phishsight-extention/README.md](phishsight-extention/README.md) -- Chrome extension setup
+Each cloned repo has its own detailed README:
+- `brain/README.md` -- Backend API architecture, routes, services
+- `app/README.md` -- Dashboard app structure, components
+- `phishsight.com/README.md` -- Marketing site pages, SEO
